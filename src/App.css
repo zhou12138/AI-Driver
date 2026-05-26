@@ -1,0 +1,363 @@
+.viewer {
+  position: relative;
+  width: 512px;
+  height: 256px;
+  overflow: hidden;
+  background: #000;
+  margin: auto;
+  margin-top: calc(50vh - 128px);
+  border-radius: 4px;
+  box-shadow: 0 0 40px rgba(0,0,0,0.8);
+}
+
+/* === Image Stage === */
+.perspective-stage {
+  position: absolute;
+  inset: 0;
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  will-change: opacity;
+}
+
+.layer img {
+  width: 512px;
+  height: 256px;
+  display: block;
+  transition: transform 0.3s ease-out;
+}
+
+/* === Cockpit Frame === */
+.cockpit {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* A-pillars (left & right windshield frame) */
+.pillar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 20px;
+  background: linear-gradient(to right, rgba(20,20,25,0.95), rgba(20,20,25,0.0));
+}
+
+.pillar-left {
+  left: 0;
+  background: linear-gradient(to right, rgba(20,20,25,0.95) 0%, rgba(20,20,25,0.6) 60%, transparent 100%);
+}
+
+.pillar-right {
+  right: 0;
+  background: linear-gradient(to left, rgba(20,20,25,0.95) 0%, rgba(20,20,25,0.6) 60%, transparent 100%);
+}
+
+/* Roof bar */
+.cockpit-roof {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 15px;
+  background: linear-gradient(to bottom, rgba(15,15,20,0.95) 0%, rgba(15,15,20,0.5) 60%, transparent 100%);
+}
+
+/* Hood / bottom of windshield */
+.cockpit-hood {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 80px;
+  background: linear-gradient(to top,
+    rgba(25,25,30,0.98) 0%,
+    rgba(25,25,30,0.95) 30%,
+    rgba(25,25,30,0.7) 55%,
+    rgba(25,25,30,0.3) 75%,
+    transparent 100%
+  );
+}
+
+/* Rearview mirror */
+.rearview-mirror {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 45px;
+  height: 18px;
+  background: rgba(30,30,35,0.95);
+  border-radius: 3px 3px 6px 6px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+}
+
+.mirror-glass {
+  width: 100%;
+  height: 100%;
+  border-radius: 2px 2px 4px 4px;
+  background: linear-gradient(135deg, rgba(80,90,100,0.6), rgba(40,50,60,0.4));
+  border: 1px solid rgba(60,60,70,0.5);
+}
+
+/* Windshield vignette */
+.vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 85% 80% at 50% 45%,
+    transparent 0%,
+    transparent 55%,
+    rgba(0,0,0,0.12) 75%,
+    rgba(0,0,0,0.35) 100%
+  );
+}
+
+/* === Dashboard Area === */
+.dashboard-area {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 80px;
+  z-index: 15;
+  pointer-events: none;
+}
+
+/* Steering wheel wrapper */
+.wheel-wrapper {
+  position: absolute;
+  left: 10px;
+  bottom: -30px;
+  width: 110px;
+  height: 110px;
+  pointer-events: auto;
+  user-select: none;
+}
+
+/* Steering wheel */
+.steering-wheel {
+  width: 100%;
+  height: 100%;
+  opacity: 1;
+  transition: transform 0.15s ease-out;
+}
+
+/* Speed on wheel hub */
+.wheel-speed {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  transition: transform 0.15s ease-out;
+}
+
+.wheel-speed-value {
+  font-size: 12px;
+  font-weight: 300;
+  color: rgba(255,255,255,0.9);
+  line-height: 1;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  text-shadow: 0 0 6px rgba(255,255,255,0.3);
+}
+
+.wheel-speed-unit {
+  font-size: 5px;
+  color: rgba(255,255,255,0.5);
+  letter-spacing: 1px;
+}
+
+/* === HUD Top === */
+.hud-top {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.title {
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 1px;
+  color: rgba(255,255,255,0.6);
+}
+
+.coord-label {
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(8px);
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  color: rgba(255,255,255,0.7);
+}
+
+/* === Controls Panel === */
+.controls-panel {
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  pointer-events: auto;
+}
+
+/* Blend mode toggle */
+.blend-toggle {
+  display: flex;
+  gap: 2px;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(8px);
+  border-radius: 16px;
+  padding: 3px;
+}
+
+.blend-btn {
+  border: none;
+  background: transparent;
+  color: rgba(255,255,255,0.45);
+  font-size: 8px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.25s;
+}
+
+.blend-btn.active {
+  background: rgba(255,255,255,0.2);
+  color: #fff;
+}
+
+.blend-btn:hover {
+  color: rgba(255,255,255,0.8);
+}
+
+/* Progress bar */
+.progress-track {
+  width: min(250px, 50vw);
+  height: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  cursor: pointer;
+  position: relative;
+}
+
+.progress-fill {
+  height: 100%;
+  background: rgba(255,255,255,0.7);
+  border-radius: 2px;
+  transition: width 0.05s linear;
+}
+
+.progress-dots {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  pointer-events: none;
+}
+
+.progress-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.3);
+  transition: background 0.3s, transform 0.3s;
+  flex-shrink: 0;
+}
+
+.progress-dot.active {
+  background: #fff;
+  transform: scale(1.3);
+}
+
+/* Bottom controls row */
+.controls-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.play-btn {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+  font-size: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.3s;
+}
+
+.play-btn:hover {
+  background: rgba(255,255,255,0.25);
+}
+
+/* Speed slider track */
+.speed-track {
+  width: 100px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 2px;
+  cursor: pointer;
+  position: relative;
+  user-select: none;
+}
+
+.speed-fill {
+  height: 100%;
+  background: linear-gradient(to right, rgba(100,200,255,0.6), rgba(255,120,80,0.8));
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.speed-thumb {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 4px rgba(255,255,255,0.4);
+  pointer-events: none;
+}
+
+.speed-label {
+  font-size: 10px;
+  line-height: 1;
+}
+
+.speed-label-text {
+  font-size: 8px;
+  color: rgba(255,255,255,0.6);
+  white-space: nowrap;
+  min-width: 36px;
+}
