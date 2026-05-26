@@ -279,6 +279,8 @@ function setupIPC() {
       destName,
       destLat,
       destLng,
+      injectUIScript: getInjectUIScript(true),
+      hideUIScript: HIDE_GOOGLE_UI_SCRIPT,
       onStatus: (status) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('nav:status', status);
@@ -315,6 +317,8 @@ function setupIPC() {
     navEngine = new NavEngine({
       webContents: svView.webContents,
       waypoints: null,
+      injectUIScript: getInjectUIScript(false),
+      hideUIScript: HIDE_GOOGLE_UI_SCRIPT,
       onStatus: (status) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('nav:status', status);

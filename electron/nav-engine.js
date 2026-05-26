@@ -19,7 +19,7 @@ Respond ONLY with compact JSON:
 {"heading":N,"action":"drive|turn|teleport|arrived","teleport_idx":N,"reason":"brief"}`;
 
 export class NavEngine {
-  constructor({ webContents, waypoints, destName, destLat, destLng, onStatus, onLog }) {
+  constructor({ webContents, waypoints, destName, destLat, destLng, onStatus, onLog, injectUIScript, hideUIScript }) {
     this.wc = webContents;
     this.waypoints = waypoints;
     this.destName = destName || '';
@@ -27,6 +27,8 @@ export class NavEngine {
     this.destLng = destLng || 0;
     this.onStatus = onStatus || (() => {});
     this.onLog = onLog || console.log;
+    this.injectUIScript = injectUIScript || '';
+    this.hideUIScript = hideUIScript || '';
 
     this.running = false;
     this.tick = 0;
@@ -281,19 +283,8 @@ Odometer: ${this.odometer.toFixed(2)}km`;
             const tpUrl = makeStreetViewUrl(tpWp.lat, tpWp.lng, this.aiDecision.heading);
             await this.wc.loadURL(tpUrl);
             await sleep(3000);
-            // Re-inject UI and hide Google chrome
-            await this.wc.executeJavaScript(`
-              ['#omnibox-singlebox', '#vasquette', '.app-viewcard-strip',
-               '#runway-expand-button', '.scene-footer', '#watermark',
-               '.app-horizontal-widget-holder', '#minimap', '.scene-description',
-               '.scene-footer-container', '.app-bottom-content-anchor',
-               '.widget-scene', '.widget-scene-canvas-bottom-left',
-               '#image-header', '.scene-action-bar', '#fineprint-label',
-               '.noprint', '#mapDiv'
-              ].forEach(s => {
-                document.querySelectorAll(s).forEach(el => el.style.display = 'none');
-              });
-            `);
+            // Re-inject UI after teleport (page reload clears all injected DOM)
+            await this.reInjectUI();
           } catch (tpErr) {
             this.onLog(`  ⚠️ 传送异常: ${tpErr.message?.slice(0, 100)}`);
           }
@@ -374,23 +365,50 @@ Odometer: ${this.odometer.toFixed(2)}km`;
         this.onLog(`  ⚠️ tick ${this.tick} 异常: ${err.message?.slice(0, 100)}`);
       }
 
+      // Periodic HUD check - re-inject if DOM was lost
+      if (this.tick % 50 === 0) {
+        await this.ensureHUD();
+      }
+
       await sleep(100);
     }
 
     this.onLog(`🏁 导航结束 | 总里程: ${this.odometer.toFixed(2)}km | AI调用: ${this.aiCallCount}次`);
   }
 
+  // ========== Re-inject HUD ==========
+  async reInjectUI() {
+    try {
+      if (this.hideUIScript) await this.wc.executeJavaScript(this.hideUIScript);
+      await sleep(200);
+      if (this.injectUIScript) await this.wc.executeJavaScript(this.injectUIScript);
+    } catch (e) {
+      this.onLog(`  ⚠️ HUD注入失败: ${e.message?.slice(0, 80)}`);
+    }
+  }
+
+  async ensureHUD() {
+    try {
+      const hasHud = await this.wc.executeJavaScript('!!document.getElementById("dashboard")');
+      if (!hasHud) {
+        this.onLog('  🔄 HUD丢失，重新注入...');
+        await this.reInjectUI();
+      }
+    } catch (_) {}
+  }
+
   // ========== Free Drive Loop ==========
   async freeDriveLoop() {
     while (this.running) {
       this.tick++;
+      let moving = false, turning = false;
       try {
         const keys = await this.wc.executeJavaScript(
           'window.__getKeys ? window.__getKeys() : { w: false, a: false, s: false, d: false }'
         );
         const gear = Math.round(this.targetSpeed / 20);
-        const turning = keys.a || keys.d;
-        const moving = keys.w;
+        turning = keys.a || keys.d;
+        moving = keys.w;
 
         await this.wc.executeJavaScript(`
           if (window.__updateGauges) window.__updateGauges(${gear}, ${!moving && !turning});
@@ -411,6 +429,11 @@ Odometer: ${this.odometer.toFixed(2)}km`;
           const dragY = vp.h / 4;
           if (keys.a) await this.cdpDrag(dragX + this.MAX_DRAG, dragX - this.MAX_DRAG, dragY);
           if (keys.d) await this.cdpDrag(dragX - this.MAX_DRAG, dragX + this.MAX_DRAG, dragY);
+        }
+
+        // Periodic HUD check for free drive too
+        if (this.tick % 50 === 0) {
+          await this.ensureHUD();
         }
       } catch (err) {
         if (err.message?.includes('destroyed') || err.message?.includes('closed')) {
