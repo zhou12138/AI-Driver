@@ -6,8 +6,8 @@ const api = window.electronAPI || {};
 
 export default function ElectronApp() {
   const [mode, setMode] = useState('setup'); // setup | planning | preview | driving
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
+  const [from, setFrom] = useState('Flagstaff, Coconino County, Arizona, United States');
+  const [to, setTo] = useState('Logan County, Illinois, United States');
   const [fromGeo, setFromGeo] = useState(null);
   const [toGeo, setToGeo] = useState(null);
   const [routeInfo, setRouteInfo] = useState(null);
@@ -16,7 +16,13 @@ export default function ElectronApp() {
   const [status, setStatus] = useState(null);
   const [speed, setSpeed] = useState(60);
   const [logs, setLogs] = useState([]);
+  const [selectedRouteId, setSelectedRouteId] = useState('');
+  const [showingDetails, setShowingDetails] = useState(false);
+  const [shouldAutoOpenDetails, setShouldAutoOpenDetails] = useState(false);
   const logRef = useRef(null);
+
+  const routeOptions = routeInfo?.routeOptions || [];
+  const selectedRoute = routeOptions.find(r => r.id === selectedRouteId) || routeOptions[0] || null;
 
   // Listen for nav status updates
   useEffect(() => {
@@ -30,6 +36,35 @@ export default function ElectronApp() {
     });
     return () => { unsub1(); unsub2(); };
   }, []);
+
+  useEffect(() => {
+    // Auto-hide details when leaving preview mode.
+    if (mode !== 'preview' && showingDetails && api.hideRouteDetails) {
+      api.hideRouteDetails().catch(() => {});
+      setShowingDetails(false);
+    }
+  }, [mode, showingDetails]);
+
+  useEffect(() => {
+    // Auto-open details once when route planning enters preview mode.
+    if (mode !== 'preview' || !shouldAutoOpenDetails) return;
+    if (!selectedRoute?.detailsUrl || !api.showRouteDetails) {
+      setShouldAutoOpenDetails(false);
+      return;
+    }
+    api.showRouteDetails(selectedRoute.detailsUrl)
+      .then(() => setShowingDetails(true))
+      .catch((e) => setError(`无法打开路线详情: ${e.message}`))
+      .finally(() => setShouldAutoOpenDetails(false));
+  }, [mode, shouldAutoOpenDetails, selectedRoute]);
+
+  useEffect(() => {
+    // When details pane is open, switching route option refreshes the embedded page.
+    if (mode !== 'preview' || !showingDetails || !selectedRoute?.detailsUrl || !api.showRouteDetails) return;
+    api.showRouteDetails(selectedRoute.detailsUrl).catch((e) => {
+      setError(`无法切换路线详情: ${e.message}`);
+    });
+  }, [mode, showingDetails, selectedRoute]);
 
   const handleGeocode = async () => {
     if (!from.trim() || !to.trim()) {
@@ -59,26 +94,48 @@ export default function ElectronApp() {
 
       if (!route || route.error) {
         setError(route?.error || '路线规划失败');
+        setShouldAutoOpenDetails(false);
         setMode('setup');
       } else {
         setRouteInfo(route);
+        setSelectedRouteId(route.selectedOptionId || route.routeOptions?.[0]?.id || '');
+        setShowingDetails(false);
+        setShouldAutoOpenDetails(true);
         setMode('preview');
       }
     } catch (e) {
       setError(e.message);
+      setShouldAutoOpenDetails(false);
       setMode('setup');
     }
     setLoading(false);
   };
 
+  const handleSwapEndpoints = () => {
+    const prevFrom = from;
+    const prevTo = to;
+    const prevFromGeo = fromGeo;
+    const prevToGeo = toGeo;
+    setFrom(prevTo);
+    setTo(prevFrom);
+    setFromGeo(prevToGeo);
+    setToGeo(prevFromGeo);
+    setError('');
+  };
+
   const handleStartDriving = async () => {
     if (!routeInfo) return;
+    const routeToUse = selectedRoute || routeInfo;
+    if (showingDetails && api.hideRouteDetails) {
+      await api.hideRouteDetails().catch(() => {});
+      setShowingDetails(false);
+    }
     setMode('driving');
     setLogs([]);
     try {
       const heading = 90; // will be calculated by engine
       await api.startNavigation({
-        waypoints: routeInfo.waypoints,
+        waypoints: routeToUse.waypoints,
         destName: toGeo.name,
         destLat: toGeo.lat,
         destLng: toGeo.lng,
@@ -102,6 +159,10 @@ export default function ElectronApp() {
   };
 
   const handleStop = async () => {
+    if (api.hideRouteDetails) {
+      await api.hideRouteDetails().catch(() => {});
+    }
+    setShowingDetails(false);
     await api.stop();
     setMode('setup');
     setStatus(null);
@@ -110,6 +171,29 @@ export default function ElectronApp() {
   const handleSpeedChange = (newSpeed) => {
     setSpeed(newSpeed);
     api.setSpeed(newSpeed);
+  };
+
+  const handleOpenRouteDetails = async () => {
+    if (!selectedRoute?.detailsUrl) return;
+    try {
+      if (showingDetails) {
+        if (api.hideRouteDetails) {
+          await api.hideRouteDetails();
+          setShowingDetails(false);
+        }
+        return;
+      }
+      if (api.showRouteDetails) {
+        await api.showRouteDetails(selectedRoute.detailsUrl);
+        setShowingDetails(true);
+        return;
+      }
+      if (api.openExternal) {
+        await api.openExternal(selectedRoute.detailsUrl);
+      }
+    } catch (e) {
+      setError(`无法打开路线详情: ${e.message}`);
+    }
   };
 
   // Not in Electron — show fallback
@@ -142,7 +226,14 @@ export default function ElectronApp() {
               onChange={e => setFrom(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleGeocode()}
             />
-            <span style={styles.arrow}>→</span>
+            <button
+              style={styles.swapBtn}
+              onClick={handleSwapEndpoints}
+              title="交换起点和终点"
+              aria-label="交换起点和终点"
+            >
+              ⇄
+            </button>
             <input
               style={styles.input}
               placeholder="终点 (如: Antalya Airport)"
@@ -166,8 +257,24 @@ export default function ElectronApp() {
         {mode === 'preview' && routeInfo && (
           <div style={styles.inputRow}>
             <span style={styles.routeInfo}>
-              📍 {routeInfo.source} | {routeInfo.distanceKm} km | {routeInfo.waypointCount} 航点
+              📍 {selectedRoute?.source || routeInfo.source} | {selectedRoute?.distanceKm || routeInfo.distanceKm} km | {selectedRoute?.waypointCount || routeInfo.waypointCount} 航点
             </span>
+            {routeOptions.length > 0 && (
+              <select
+                style={styles.routeSelect}
+                value={selectedRoute?.id || ''}
+                onChange={(e) => setSelectedRouteId(e.target.value)}
+              >
+                {routeOptions.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.label} | {opt.distanceKm}km | {opt.durationMin}min
+                  </option>
+                ))}
+              </select>
+            )}
+            <button style={{ ...styles.btn, ...styles.btnSecondary }} onClick={handleOpenRouteDetails}>
+              {showingDetails ? '✕ 关闭详情' : '🗺 详情页'}
+            </button>
             <button style={{ ...styles.btn, ...styles.btnGreen }} onClick={handleStartDriving}>
               ▶ 开始导航
             </button>
@@ -251,6 +358,20 @@ const styles = {
     color: '#888',
     fontSize: '16px',
   },
+  swapBtn: {
+    background: '#2f2f2f',
+    border: '1px solid #555',
+    borderRadius: '4px',
+    color: '#ddd',
+    width: '32px',
+    height: '32px',
+    cursor: 'pointer',
+    fontSize: '15px',
+    lineHeight: '1',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   btn: {
     background: '#0066cc',
     color: '#fff',
@@ -280,6 +401,16 @@ const styles = {
     color: '#aaa',
     fontSize: '12px',
     fontFamily: "'Courier New', monospace",
+  },
+  routeSelect: {
+    background: '#2e2e2e',
+    border: '1px solid #555',
+    borderRadius: '4px',
+    color: '#fff',
+    padding: '6px 8px',
+    fontSize: '12px',
+    minWidth: '260px',
+    outline: 'none',
   },
   error: {
     color: '#f44',

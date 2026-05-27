@@ -1,10 +1,11 @@
 // ========== Electron Main Process ==========
 import { app, BrowserWindow, BrowserView, ipcMain, session } from 'electron';
+import { shell } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { readFileSync } from 'fs';
 import { NavEngine } from './nav-engine.js';
-import { geocode, getOSRMRoute, haversine, sampleRoute, makeStreetViewUrl, parseGoogleRouteBody } from './helpers.js';
+import { geocode, getOSRMRoute, getOSRMRouteOptions, haversine, sampleRoute, makeStreetViewUrl, parseGoogleRouteBody } from './helpers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,6 +31,7 @@ try {
 
 let mainWindow;
 let svView;       // Street View BrowserView
+let detailView;   // Route details BrowserView
 let navEngine;
 const isDev = !app.isPackaged;
 
@@ -51,7 +53,6 @@ function createWindow() {
   if (isDev) {
     const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5174';
     mainWindow.loadURL(devUrl);
-    mainWindow.webContents.openDevTools();
     // Forward renderer console to main process
     mainWindow.webContents.on('console-message', (_e, level, msg) => {
       const tag = ['V','I','W','E'][level] || '?';
@@ -72,6 +73,8 @@ function createWindow() {
 // ========== Street View BrowserView ==========
 
 function createStreetView(url) {
+  removeRouteDetailView();
+
   // Remove existing view if any
   if (svView) {
     mainWindow.removeBrowserView(svView);
@@ -101,6 +104,43 @@ function resizeStreetView() {
   const { width, height } = mainWindow.getContentBounds();
   const TOP_BAR = 52; // height of React control bar
   svView.setBounds({ x: 0, y: TOP_BAR, width, height: height - TOP_BAR });
+}
+
+function createRouteDetailView(url) {
+  // Replace existing details view if any.
+  if (detailView) {
+    mainWindow.removeBrowserView(detailView);
+    try { detailView.webContents.destroy(); } catch (_) {}
+  }
+
+  detailView = new BrowserView({
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  mainWindow.addBrowserView(detailView);
+  resizeRouteDetailView();
+  mainWindow.on('resize', resizeRouteDetailView);
+  detailView.webContents.loadURL(url);
+  return detailView;
+}
+
+function resizeRouteDetailView() {
+  if (!detailView || !mainWindow) return;
+  const { width, height } = mainWindow.getContentBounds();
+  const TOP_BAR = 52;
+  detailView.setBounds({ x: 0, y: TOP_BAR, width, height: height - TOP_BAR });
+}
+
+function removeRouteDetailView() {
+  if (detailView && mainWindow) {
+    mainWindow.removeBrowserView(detailView);
+    mainWindow.removeListener('resize', resizeRouteDetailView);
+    try { detailView.webContents.destroy(); } catch (_) {}
+    detailView = null;
+  }
 }
 
 function removeStreetView() {
@@ -218,13 +258,26 @@ function setupIPC() {
       return { error: `直线距离 ${straightDist.toFixed(0)} km 过大，请检查地名` };
     }
 
-    // Try Google Maps first
-    let routeData = await getGoogleRoute(fromName, toName);
-    let source = 'Google Maps';
+    // Try Google first and fetch OSRM alternatives for route options
+    const [googleRoute, osrmOptions] = await Promise.all([
+      getGoogleRoute(fromName, toName),
+      getOSRMRouteOptions(fromLat, fromLng, toLat, toLng, 3).catch(() => []),
+    ]);
 
-    // Fallback to OSRM
-    if (!routeData) {
+    let routeData = googleRoute;
+    let source = 'Google Maps';
+    if (!routeData && osrmOptions.length > 0) {
       console.log('  ⚠️ Google 失败，使用 OSRM...');
+      routeData = {
+        coords: osrmOptions[0].coords,
+        distanceKm: osrmOptions[0].distanceKm,
+        durationMin: osrmOptions[0].durationMin,
+      };
+      source = 'OSRM';
+    }
+
+    if (!routeData) {
+      // Final fallback to old single OSRM path if alternatives endpoint fails
       routeData = await getOSRMRoute(fromLat, fromLng, toLat, toLng);
       source = 'OSRM';
     }
@@ -236,6 +289,35 @@ function setupIPC() {
     const waypoints = sampleRoute(routeData.coords, 0.05);
     console.log(`  ✅ ${source}: ${routeData.distanceKm} km, ${waypoints.length} 航点`);
 
+    const routeOptions = [];
+    if (googleRoute) {
+      const googleWaypoints = sampleRoute(googleRoute.coords, 0.05);
+      routeOptions.push({
+        id: 'google-primary',
+        source: 'Google Maps',
+        label: 'Google 推荐路线',
+        distanceKm: Number(googleRoute.distanceKm),
+        durationMin: googleRoute.durationMin,
+        waypointCount: googleWaypoints.length,
+        waypoints: googleWaypoints,
+        detailsUrl: `https://www.google.com/maps/dir/${encodeURIComponent(fromName)}/${encodeURIComponent(toName)}`,
+      });
+    }
+    for (const opt of osrmOptions) {
+      const optWaypoints = sampleRoute(opt.coords, 0.05);
+      routeOptions.push({
+        id: opt.id,
+        source: opt.source,
+        label: opt.label,
+        distanceKm: opt.distanceKm,
+        durationMin: opt.durationMin,
+        waypointCount: optWaypoints.length,
+        waypoints: optWaypoints,
+        detailsUrl: `https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${fromLat}%2C${fromLng}%3B${toLat}%2C${toLng}`,
+      });
+    }
+
+    const selectedOptionId = routeOptions.length > 0 ? routeOptions[0].id : 'default';
     const result = {
       source,
       distanceKm: routeData.distanceKm,
@@ -244,13 +326,35 @@ function setupIPC() {
       waypoints,
       startLat: waypoints[0].lat,
       startLng: waypoints[0].lng,
+      selectedOptionId,
+      routeOptions,
     };
     console.log('  📤 IPC 返回路线数据...');
     return result;
   });
 
+  ipcMain.handle('sys:openExternal', async (_event, url) => {
+    if (!url || typeof url !== 'string') return { ok: false };
+    await shell.openExternal(url);
+    return { ok: true };
+  });
+
+  ipcMain.handle('route:showDetails', async (_event, url) => {
+    if (!url || typeof url !== 'string') return { ok: false };
+    if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+    createRouteDetailView(url);
+    return { ok: true };
+  });
+
+  ipcMain.handle('route:hideDetails', async () => {
+    removeRouteDetailView();
+    return { ok: true };
+  });
+
   // Start driving
   ipcMain.handle('nav:start', async (_event, { waypoints, destName, destLat, destLng, startHeading }) => {
+    removeRouteDetailView();
+
     // Create Street View
     const url = makeStreetViewUrl(waypoints[0].lat, waypoints[0].lng, startHeading || 90);
     createStreetView(url);
@@ -300,6 +404,8 @@ function setupIPC() {
 
   // Free drive mode (no route)
   ipcMain.handle('nav:freeDrive', async (_event, { lat, lng, heading }) => {
+    removeRouteDetailView();
+
     const url = makeStreetViewUrl(lat, lng, heading || 90);
     createStreetView(url);
 
@@ -339,6 +445,7 @@ function setupIPC() {
   // Stop navigation
   ipcMain.handle('nav:stop', () => {
     if (navEngine) navEngine.stop();
+    removeRouteDetailView();
     removeStreetView();
     return { ok: true };
   });
@@ -439,6 +546,14 @@ function injectCarUIFn(navMode) {
       font-family: 'Courier New', monospace; font-size: 14px; font-weight: bold;
       padding: 6px 18px; border-radius: 20px;
       background: rgba(0,100,255,0.7); color: #fff; border: 1px solid rgba(100,180,255,0.5);
+    }
+    #mode-badge.auto {
+      background: rgba(0,100,255,0.72);
+      border-color: rgba(100,180,255,0.6);
+    }
+    #mode-badge.manual {
+      background: rgba(0,150,60,0.72);
+      border-color: rgba(80,240,140,0.65);
     }
     #key-hud {
       position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
@@ -590,8 +705,24 @@ function injectCarUIFn(navMode) {
   };
 
   // Keyboard state tracking
+  let autoForward = true;
   const keys = { w: false, a: false, s: false, d: false };
   document.addEventListener('keydown', e => {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      autoForward = !autoForward;
+      const badge = document.getElementById('mode-badge');
+      if (badge) {
+        badge.className = autoForward ? 'auto' : 'manual';
+        if (navMode) {
+          badge.textContent = autoForward ? '🤖 AI导航  [Space]' : '🎮 手动驾驶  [Space]';
+        } else {
+          badge.textContent = autoForward ? '▶ AUTO  [Space]' : '🎮 W前进  [Space]';
+        }
+      }
+      return;
+    }
     const k = e.key.toLowerCase();
     if (keys.hasOwnProperty(k)) {
       keys[k] = true;
@@ -600,6 +731,11 @@ function injectCarUIFn(navMode) {
     }
   }, { capture: true });
   document.addEventListener('keyup', e => {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return;
+    }
     const k = e.key.toLowerCase();
     if (keys.hasOwnProperty(k)) {
       keys[k] = false;
@@ -608,7 +744,11 @@ function injectCarUIFn(navMode) {
     }
   }, { capture: true });
 
+  modeBadge.className = 'auto';
+  modeBadge.textContent = navMode ? '🤖 AI导航  [Space]' : '▶ AUTO  [Space]';
+
   window.__getKeys = () => ({ ...keys });
+  window.__getAutoForward = () => autoForward;
   window.__driveGear = () => Math.round((window.__targetSpeed || 60) / 20);
 }
 

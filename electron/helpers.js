@@ -31,10 +31,17 @@ export async function getOSRMRoute(startLat, startLng, endLat, endLng) {
     if (data.code === 'Ok' && data.routes.length > 0) {
       const route = data.routes[0];
       const routeDistKm = route.distance / 1000;
-      // If route is >3x straight-line distance, likely a snapping issue — try next coords
-      if (routeDistKm > straightDist * 3 && ci < tryCoords.length - 1) {
-        console.log(`  ⚠️ OSRM 路线异常 (${routeDistKm.toFixed(0)}km vs 直线${straightDist.toFixed(0)}km), 重试...`);
+      const hasFerry = routeHasFerry(route);
+      const distOk = isRouteDistanceReasonable(routeDistKm, straightDist);
+      if ((hasFerry || !distOk) && ci < tryCoords.length - 1) {
+        const why = hasFerry ? '包含海路/渡轮' : `距离异常(${routeDistKm.toFixed(0)}km vs 直线${straightDist.toFixed(0)}km)`;
+        console.log(`  ⚠️ OSRM 路线异常: ${why}, 重试...`);
         continue;
+      }
+      if (hasFerry || !distOk) {
+        const why = hasFerry ? '包含海路/渡轮' : `距离异常(${routeDistKm.toFixed(0)}km vs 直线${straightDist.toFixed(0)}km)`;
+        console.log(`  ⚠️ OSRM 路线已丢弃: ${why}`);
+        return null;
       }
       const coords = route.geometry.coordinates.map(c => ({ lat: c[1], lng: c[0] }));
       return {
@@ -45,6 +52,55 @@ export async function getOSRMRoute(startLat, startLng, endLat, endLng) {
     }
   }
   return null;
+}
+
+export async function getOSRMRouteOptions(startLat, startLng, endLat, endLng, maxOptions = 3) {
+  const url = `https://router.project-osrm.org/route/v1/driving/${startLng},${startLat};${endLng},${endLat}?overview=full&geometries=geojson&steps=true&alternatives=true`;
+  const resp = await fetch(url, { headers: { 'User-Agent': 'StreetViewDrive/1.0' } });
+  const data = await resp.json();
+  if (data.code !== 'Ok' || !Array.isArray(data.routes) || data.routes.length === 0) {
+    return [];
+  }
+
+  const straightDist = haversine(startLat, startLng, endLat, endLng);
+
+  const filtered = data.routes.filter((route) => {
+    const routeDistKm = route.distance / 1000;
+    if (routeHasFerry(route)) return false;
+    if (!isRouteDistanceReasonable(routeDistKm, straightDist)) return false;
+    return true;
+  });
+
+  return filtered.slice(0, maxOptions).map((route, idx) => ({
+    id: `osrm-${idx + 1}`,
+    source: 'OSRM',
+    label: `OSRM 备选 ${idx + 1}`,
+    coords: route.geometry.coordinates.map(c => ({ lat: c[1], lng: c[0] })),
+    distanceKm: Number((route.distance / 1000).toFixed(1)),
+    durationMin: Math.round(route.duration / 60),
+  }));
+}
+
+function routeHasFerry(route) {
+  const legs = Array.isArray(route?.legs) ? route.legs : [];
+  for (const leg of legs) {
+    const steps = Array.isArray(leg?.steps) ? leg.steps : [];
+    for (const step of steps) {
+      const mode = String(step?.mode || '').toLowerCase();
+      if (mode === 'ferry') return true;
+      const name = String(step?.name || '').toLowerCase();
+      // Keep keyword check strict to avoid false positives like "Akdeniz" road names.
+      if (/\b(ferry|feribot|feri)\b/i.test(name)) return true;
+    }
+  }
+  return false;
+}
+
+function isRouteDistanceReasonable(routeDistKm, straightDistKm) {
+  if (straightDistKm <= 0) return true;
+  if (routeDistKm < straightDistKm * 0.7) return false;
+  if (routeDistKm > straightDistKm * 3.2) return false;
+  return true;
 }
 
 export function haversine(lat1, lon1, lat2, lon2) {

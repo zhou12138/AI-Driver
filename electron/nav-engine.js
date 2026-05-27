@@ -47,6 +47,7 @@ export class NavEngine {
     this.AI_CALL_INTERVAL = 20;
     this.posHistory = [];
     this.MAX_DRAG = 18;
+    this.MAX_DRAG_SHARP = 26;
   }
 
   setTargetSpeed(speed) {
@@ -110,6 +111,36 @@ export class NavEngine {
     this.wc.sendInputEvent({ type: 'keyUp', keyCode: key });
   }
 
+  getForwardStepsByAngle(baseGear, absAngle) {
+    if (absAngle > 120) return 0;
+    if (absAngle > 90) return Math.min(1, baseGear);
+    if (absAngle > 60) return Math.max(1, Math.floor(baseGear * 0.5));
+    return baseGear;
+  }
+
+  async applyHeadingCorrection(angleDiff, dragX, dragY) {
+    const absAngle = Math.abs(angleDiff);
+    if (absAngle <= 15) return;
+
+    const dragDir = angleDiff > 0 ? -1 : 1;
+
+    if (absAngle > 90) {
+      // Two-stage drag for hairpin-like turns: strong coarse turn then a smaller settle turn.
+      const primaryPx = Math.min(this.MAX_DRAG_SHARP, Math.max(8, Math.round(absAngle * 0.28)));
+      await this.cdpDrag(dragX - dragDir * primaryPx, dragX + dragDir * primaryPx, dragY);
+      await sleep(25);
+
+      const secondaryPx = Math.min(this.MAX_DRAG, Math.max(6, Math.round(absAngle * 0.16)));
+      await this.cdpDrag(dragX - dragDir * secondaryPx, dragX + dragDir * secondaryPx, dragY);
+      await sleep(20);
+      return;
+    }
+
+    const dragPx = Math.min(this.MAX_DRAG, Math.max(3, Math.round(absAngle * 0.2)));
+    await this.cdpDrag(dragX - dragDir * dragPx, dragX + dragDir * dragPx, dragY);
+    await sleep(20);
+  }
+
   // ========== Get viewport size ==========
   async getViewport() {
     const bounds = this.wc.getOwnerBrowserWindow?.()?.getContentBounds?.();
@@ -124,12 +155,16 @@ export class NavEngine {
     const wpList = ctx.nearbyWps.map(w =>
       `  [${w.idx}] ${w.lat.toFixed(6)}, ${w.lng.toFixed(6)}`
     ).join('\n');
+    const wpListText = wpList || '  (none)';
 
     const userMsg = `Position: ${ctx.curLat.toFixed(6)}, ${ctx.curLng.toFixed(6)} heading=${ctx.curHead.toFixed(0)}°
 Destination: ${this.destName} (${this.destLat.toFixed(4)}, ${this.destLng.toFixed(4)}) straight-line=${ctx.distToDest.toFixed(1)}km
 Current wpIndex: ${ctx.wpIndex}/${this.waypoints.length}
 Stuck ticks: ${this.stuckCounter}
-Odometer: ${this.odometer.toFixed(2)}km`;
+Odometer: ${this.odometer.toFixed(2)}km
+
+Route waypoints nearby:
+${wpListText}`;
 
     const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
       method: 'POST',
@@ -187,6 +222,10 @@ Odometer: ${this.odometer.toFixed(2)}km`;
         const curLng = parseFloat(posM[2]);
         const curHead = parseFloat(headM[1]);
         const gear = Math.round(this.targetSpeed / 20);
+        const [autoForward, keys] = await this.wc.executeJavaScript(`[
+          window.__getAutoForward ? window.__getAutoForward() : true,
+          window.__getKeys ? window.__getKeys() : { w: false, a: false, s: false, d: false }
+        ]`);
 
         // Stuck detection
         const moved = haversine(curLat, curLng, this.lastNavLat, this.lastNavLng) > 0.002;
@@ -232,6 +271,39 @@ Odometer: ${this.odometer.toFixed(2)}km`;
           this.onLog('🏁 已到达终点！');
           this.onStatus({ type: 'arrived', odometer: this.odometer });
           break;
+        }
+
+        if (!autoForward) {
+          const turning = keys.a || keys.d;
+          const moving = keys.w;
+
+          await this.wc.executeJavaScript(`
+            if (window.__updateGauges) window.__updateGauges(${gear}, ${!moving && !turning});
+          `).catch(() => {});
+
+          if (moving) {
+            const steps = turning ? 1 : gear;
+            for (let i = 0; i < steps; i++) {
+              await this.pressKey('Up');
+              await sleep(15);
+            }
+          }
+          if (keys.s) await this.pressKey('Down');
+          if (keys.a) await this.cdpDrag(dragX + this.MAX_DRAG, dragX - this.MAX_DRAG, dragY);
+          if (keys.d) await this.cdpDrag(dragX - this.MAX_DRAG, dragX + this.MAX_DRAG, dragY);
+
+          const seg = haversine(this.prevLat, this.prevLng, curLat, curLng);
+          if (seg < 0.5) this.odometer += seg;
+          this.prevLat = curLat;
+          this.prevLng = curLng;
+
+          if (this.tick % 15 === 0) {
+            const keyStr = ['w', 'a', 's', 'd'].filter(k => keys[k]).join('+');
+            this.onLog(`  🎮 tick ${this.tick} | MANUAL | ${keyStr || 'idle'} | wp ${this.wpIndex}/${this.waypoints.length} | odo:${this.odometer.toFixed(2)}km`);
+          }
+
+          await sleep(moving || turning ? 100 : 200);
+          continue;
         }
 
         // AI call (throttled)
@@ -304,22 +376,18 @@ Odometer: ${this.odometer.toFixed(2)}km`;
         if (angleDiff < -180) angleDiff += 360;
         const absAngle = Math.abs(angleDiff);
 
-        if (absAngle > 15) {
-          const dragDir = angleDiff > 0 ? -1 : 1;
-          const dragPx = Math.min(this.MAX_DRAG, Math.max(3, Math.round(absAngle * 0.2)));
-          await this.cdpDrag(dragX - dragDir * dragPx, dragX + dragDir * dragPx, dragY);
-          await sleep(20);
-        }
+        await this.applyHeadingCorrection(angleDiff, dragX, dragY);
 
         // Drive forward
-        for (let i = 0; i < gear; i++) {
+        const forwardSteps = this.getForwardStepsByAngle(gear, absAngle);
+        for (let i = 0; i < forwardSteps; i++) {
           await this.pressKey('Up');
           await sleep(15);
         }
 
         // Update gauges
         await this.wc.executeJavaScript(`
-          if (window.__updateGauges) window.__updateGauges(${gear}, false);
+          if (window.__updateGauges) window.__updateGauges(${forwardSteps}, false);
         `).catch(() => {});
 
         // Update odometer
@@ -403,12 +471,13 @@ Odometer: ${this.odometer.toFixed(2)}km`;
       this.tick++;
       let moving = false, turning = false;
       try {
-        const keys = await this.wc.executeJavaScript(
-          'window.__getKeys ? window.__getKeys() : { w: false, a: false, s: false, d: false }'
-        );
+        const [autoForward, keys] = await this.wc.executeJavaScript(`[
+          window.__getAutoForward ? window.__getAutoForward() : true,
+          window.__getKeys ? window.__getKeys() : { w: false, a: false, s: false, d: false }
+        ]`);
         const gear = Math.round(this.targetSpeed / 20);
         turning = keys.a || keys.d;
-        moving = keys.w;
+        moving = autoForward || keys.w;
 
         await this.wc.executeJavaScript(`
           if (window.__updateGauges) window.__updateGauges(${gear}, ${!moving && !turning});

@@ -20,6 +20,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Stop
   stop: () => ipcRenderer.invoke('nav:stop'),
 
+  // Open route details in browser
+  openExternal: (url) => ipcRenderer.invoke('sys:openExternal', url),
+
+  // Show/hide embedded route details page in Electron BrowserView
+  showRouteDetails: (url) => ipcRenderer.invoke('route:showDetails', url),
+  hideRouteDetails: () => ipcRenderer.invoke('route:hideDetails'),
+
   // Listen for status updates from main process
   onStatus: (callback) => {
     const handler = (_event, status) => callback(status);
